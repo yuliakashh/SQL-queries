@@ -1,0 +1,459 @@
+CREATE TABLE events (
+    timestamp TIMESTAMP,
+    timestamp_day DATE,
+    employee_id NUMBER,
+    case_id VARCHAR2(255),
+    event_category VARCHAR2(256),
+    event_name VARCHAR2(256),
+    event_property VARCHAR2(256)
+);
+
+
+
+WITH session_journey AS (
+    SELECT 
+        case_id,
+        timestamp_day,
+        --Базовые метрики
+        MAX(CASE WHEN event_category = 'session' AND event_name = 'Sign In' THEN 1 ELSE 0 END) as session_started,
+        MAX(CASE WHEN event_category = 'main' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as main_completed,
+        MAX(CASE WHEN event_category = 'identification' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as identification_completed,
+        MAX(CASE WHEN event_category = 'addresses' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as addresses_completed,
+        MAX(CASE WHEN event_category = 'employment' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as employment_completed,
+        MAX(CASE WHEN event_category = 'docsUpload' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as docs_upload_completed,
+        MAX(CASE WHEN event_category = 'summary' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as summary_completed,
+        MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as final_completed,
+        -- Поведенческие метрики
+        MAX(CASE WHEN event_category = 'addresses' AND event_name IN ('Open > Manual livingAddress', 'Open > Manual regAddress') THEN 1 ELSE 0 END) as used_manual_address,
+        MAX(CASE WHEN event_category = 'cards' AND event_name = 'Click > Add card' THEN 1 ELSE 0 END) as added_cards,
+        COUNT(CASE WHEN event_category = 'cards' AND event_name = 'Click > Add card' THEN 1 END) as cards_added_count,
+        COUNT(CASE WHEN event_category = 'cards' AND event_name = 'Click > Remove card' THEN 1 END) as cards_removed_count,
+        MAX(CASE WHEN event_category = 'accessCard' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as attempted_card_issue,
+        MAX(CASE WHEN event_category = 'accessCard' AND event_name = 'Submit > Response' AND event_property = 'true' THEN 1 ELSE 0 END) as successful_card_issue,
+        MAX(CASE WHEN event_category = 'nonResidentInfo' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as is_non_resident,
+        MAX(CASE WHEN event_category = 'docsUpload' AND event_name = 'Scan > Start' THEN 1 ELSE 0 END) as attempted_scan,
+        MAX(CASE WHEN event_category = 'docsUpload' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as successful_scan,
+        MAX(CASE WHEN event_name = 'Click > Back' THEN 1 ELSE 0 END) as used_back_button,
+        MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' AND event_property = 'SES' THEN 1 ELSE 0 END) as used_esign
+        
+    from U_M2P5U.LOGS_SCREEN_FORMS_4s
+    GROUP BY case_id, timestamp_day
+),
+daily_metrics AS (
+    SELECT 
+        timestamp_day,
+        -- Базовые метрики
+        COUNT(*) as started_sessions,
+        SUM(final_completed) as completed_sessions,
+        SUM(main_completed) as main_completed,
+        SUM(identification_completed) as identification_completed,
+        SUM(addresses_completed) as addresses_completed,
+        SUM(employment_completed) as employment_completed,
+        SUM(docs_upload_completed) as docs_upload_completed,
+        SUM(summary_completed) as summary_completed,
+        -- Поведенческие метрики
+        SUM(used_manual_address) as sessions_with_manual_address,
+        SUM(added_cards) as sessions_adding_cards,
+        SUM(cards_added_count) as total_cards_added,
+        SUM(cards_removed_count) as total_cards_removed,
+        SUM(attempted_card_issue) as sessions_with_card_attempt,
+        SUM(successful_card_issue) as sessions_with_card_success,
+        SUM(is_non_resident) as non_resident_sessions,
+        SUM(attempted_scan) as sessions_with_scan_start,
+        SUM(successful_scan) as sessions_with_scan_end,
+        SUM(used_back_button) as sessions_with_back_clicks,
+        SUM(used_esign) as esign_sessions
+    FROM session_journey
+    GROUP BY timestamp_day
+)
+SELECT 
+    timestamp_day as "Дата",
+    
+    -- 1. МЕТРИКИ ЭФФЕКТИВНОСТИ ПРОЦЕССА
+    -- Общая конверсия
+    ROUND(completed_sessions * 100.0 / NULLIF(started_sessions, 0), 2) as "Общая конверсия, %",
+    ROUND(identification_completed * 100.0 / NULLIF(started_sessions, 0), 2) as "Дошли до идентификации, %",
+    ROUND(addresses_completed * 100.0 / NULLIF(started_sessions, 0), 2) as "Дошли до адресов, %",
+    ROUND(employment_completed * 100.0 / NULLIF(started_sessions, 0), 2) as "Дошли до занятости, %",
+    ROUND(docs_upload_completed * 100.0 / NULLIF(started_sessions, 0), 2) as "Дошли до документов, %",
+    
+    
+    -- 2. ПОВЕДЕНЧЕСКИЕ МЕТРИКИ
+    -- Ручной ввод адресов: только от тех, кто дошел до адресов
+    ROUND(sessions_with_manual_address * 100.0 / NULLIF(addresses_completed, 0), 2) as "Сессий с ручным вводом адресов, %",
+    
+    -- Метрики работы с картами
+    ROUND(sessions_adding_cards * 100.0 / NULLIF(started_sessions, 0), 2) as "Сессий с добавлением карт, %",
+    ROUND(total_cards_added * 1.0 / NULLIF(sessions_adding_cards, 0), 2) as "Среднее карт на активного пользователя",
+    ROUND(total_cards_removed * 100.0 / NULLIF(total_cards_added, 0), 2) as "Процент отказов от карт, %",
+    
+    -- Доля выдачи моментальных карт
+    ROUND(sessions_with_card_success * 100.0 / NULLIF(sessions_with_card_attempt, 0), 2) as "Успешная выдача карт, %",
+    
+    -- Доля нерезидентов
+    ROUND(non_resident_sessions * 100.0 / NULLIF(started_sessions, 0), 2) as "Доля нерезидентов, %",
+    
+    -- 3. МЕТРИКИ КАЧЕСТВА
+    ROUND(sessions_with_scan_start * 100.0 / NULLIF(started_sessions, 0), 2) as "Сессий использовали сканирование, %",
+    ROUND(sessions_with_scan_end * 100.0 / NULLIF(sessions_with_scan_start, 0), 2) as "Успешность сканирования, %",
+    ROUND(esign_sessions * 100.0 / NULLIF(completed_sessions, 0), 2) as "Доля ЭП, %",
+    
+    -- АБСОЛЮТНЫЕ ПОКАЗАТЕЛИ
+    started_sessions as "Начато сессий",
+    completed_sessions as "Успешно завершено",
+    addresses_completed as "Дошли до адресов"
+FROM daily_metrics
+ORDER BY timestamp_day DESC;
+
+
+--Задание 3
+--Таблица сессий
+CREATE TABLE session_analysis AS
+WITH session_base AS (
+    SELECT 
+        case_id,
+        TRUNC(MIN(timestamp), 'MONTH') as session_month,
+        MIN(timestamp) as session_start,
+        MAX(timestamp) as session_end,
+        COUNT(*) as total_events,
+        MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as is_successful, --Успешная сессия
+        MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' THEN event_property END) as sign_type -- тип завершения (manualSign - если было бумажное подписание, SES - если было электронное подписание)
+    from U_M2P5U.LOGS_SCREEN_FORMS_4s
+    WHERE event_category in ('session','result')
+    GROUP BY case_id
+),
+session_steps AS (
+    SELECT 
+        case_id,
+        MAX(CASE WHEN event_category = 'main' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as passed_main,
+        MAX(CASE WHEN event_category = 'identification' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as passed_identification,
+        MAX(CASE WHEN event_category = 'addresses' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as passed_addresses,
+        MAX(CASE WHEN event_category = 'employment' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as passed_employment,
+        MAX(CASE WHEN event_category = 'docsUpload' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as passed_documents,
+        MAX(CASE WHEN event_category = 'summary' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as passed_summary,
+        MAX(CASE WHEN event_category = 'addresses' AND event_name IN ('Open > Manual livingAddress', 'Open > Manual regAddress') THEN 1 ELSE 0 END) as used_manual_address,
+        MAX(CASE WHEN event_category = 'accessCard' AND event_name = 'Submit > Response' AND event_property = 'true' THEN 1 ELSE 0 END) as instant_card_success,
+        MAX(CASE WHEN event_category = 'nonResidentInfo' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as is_non_resident,
+        COUNT(CASE WHEN event_name = 'Click > Back' THEN 1 END) as back_clicks_count
+    from U_M2P5U.LOGS_SCREEN_FORMS_4s
+    GROUP BY case_id
+)
+SELECT 
+    sb.case_id,
+    sb.session_month,
+    sb.session_start,
+    sb.session_end,
+    EXTRACT(DAY FROM (sb.session_end - sb.session_start)) * 86400 + 
+    EXTRACT(HOUR FROM (sb.session_end - sb.session_start)) * 3600 +
+    EXTRACT(MINUTE FROM (sb.session_end - sb.session_start)) * 60 +
+    EXTRACT(SECOND FROM (sb.session_end - sb.session_start)) as duration_seconds,
+    sb.is_successful,
+    sb.sign_type,
+    ss.passed_main,
+    ss.passed_identification,
+    ss.passed_addresses,
+    ss.passed_employment,
+    ss.passed_documents,
+    ss.passed_summary,
+    ss.used_manual_address,
+    ss.instant_card_success,
+    ss.is_non_resident,
+    ss.back_clicks_count
+FROM session_base sb
+LEFT JOIN session_steps ss ON sb.case_id = ss.case_id;
+
+--Таблица операций
+CREATE TABLE operation_analysis AS
+SELECT 
+    case_id,
+    TRUNC(timestamp, 'MONTH') as operation_month,
+    event_category,
+    event_name,
+    event_property,
+    timestamp,
+    CASE 
+        WHEN event_name LIKE '%Response' AND event_name != 'Issue > Response' THEN 1
+        WHEN event_name = 'Issue > Response' THEN 1
+        ELSE 0 
+    END as is_operation_successful,
+    CASE 
+        WHEN event_category IN ('main', 'identification', 'addresses', 'employment', 'docsUpload') THEN 'core_steps'
+        WHEN event_category IN ('cards', 'servicePackage') THEN 'products'
+        WHEN event_category IN ('summary', 'questionnaire', 'confirm') THEN 'signing'
+        ELSE 'other'
+    END as operation_group
+from U_M2P5U.LOGS_SCREEN_FORMS_4
+WHERE event_category NOT IN ('session', 'result');
+
+
+
+with monthly_metrics as (
+    select 
+        session_month,
+        -- базовые метрики объема
+        count(*) as total_sessions,
+        sum(is_successful) as successful_sessions,
+        -- основная конверсия процесса
+        round(sum(is_successful) * 100.0 / count(*), 2) as conversion_rate, -- %
+        
+        -- метрики удобства интерфейса
+        round(avg(back_clicks_count), 2) as avg_back_clicks, -- количество
+        round(sum(case when back_clicks_count > 3 then 1 else 0 end) * 100.0 / count(*), 2) as high_back_clicks_rate, -- %
+        
+        -- качество автоматизации адресов
+        round(sum(used_manual_address) * 100.0 / nullif(sum(passed_addresses), 0), 2) as manual_address_rate, -- %
+        
+        -- техническая надежность выдачи карт
+        round(sum(instant_card_success) * 100.0 / nullif(sum(case when passed_documents = 1 then 1 else 0 end), 0), 2) as instant_card_success_rate, -- %
+        
+        -- эффективность цифровизации
+        round(sum(case when sign_type = 'SES' then 1 else 0 end) * 100.0 / nullif(sum(is_successful), 0), 2) as esign_rate, -- %
+        
+        -- скорость процесса
+        round(avg(duration_seconds) / 60, 2) as avg_duration_minutes, -- минут
+        round(sum(case when duration_seconds <= 600 then 1 else 0 end) * 100.0 / count(*), 2) as fast_sessions_rate, -- %
+        
+        -- стабильность ключевых шагов
+        round(sum(passed_identification) * 100.0 / count(*), 2) as identification_success_rate, -- %
+        round(sum(passed_documents) * 100.0 / nullif(sum(passed_addresses), 0), 2) as documents_success_rate -- %
+        
+    from session_analysis
+    group by session_month
+),
+technical_metrics as (
+    select 
+        operation_month,
+        -- общая надежность системы
+        round(sum(is_operation_successful) * 100.0 / count(*), 2) as system_reliability, -- %
+        -- частота ошибок в операциях
+        round(sum(case when is_operation_successful = 0 then 1 else 0 end) * 100.0 / count(*), 2) as error_rate, -- %
+        count(*) as total_operations
+    from operation_analysis
+    group by operation_month
+),
+metrics_with_delta as (
+    select 
+        m.session_month,
+        m.conversion_rate,
+        m.avg_back_clicks,
+        m.manual_address_rate,
+        m.avg_duration_minutes,
+        m.esign_rate,
+        m.identification_success_rate,
+        m.documents_success_rate,
+        m.instant_card_success_rate,
+        t.system_reliability,
+        
+        -- дельты для метрик "чем больше - тем лучше"
+        round((m.conversion_rate - first_value(m.conversion_rate) over (order by m.session_month)) / 
+              nullif(first_value(m.conversion_rate) over (order by m.session_month), 0) * 100, 2) as delta_conversion, -- %
+        
+        round((m.instant_card_success_rate - first_value(m.instant_card_success_rate) over (order by m.session_month)) / 
+              nullif(first_value(m.instant_card_success_rate) over (order by m.session_month), 0) * 100, 2) as delta_card_success, -- %
+        
+        round((m.identification_success_rate - first_value(m.identification_success_rate) over (order by m.session_month)) / 
+              nullif(first_value(m.identification_success_rate) over (order by m.session_month), 0) * 100, 2) as delta_identification, -- %
+        
+        round((m.documents_success_rate - first_value(m.documents_success_rate) over (order by m.session_month)) / 
+              nullif(first_value(m.documents_success_rate) over (order by m.session_month), 0) * 100, 2) as delta_documents, -- %
+              
+        round((m.esign_rate - first_value(m.esign_rate) over (order by m.session_month)) / 
+              nullif(first_value(m.esign_rate) over (order by m.session_month), 0) * 100, 2) as delta_esign, -- %
+        
+        -- дельты для метрик "чем меньше - тем лучше" (отрицательные значения = улучшение)
+        round((first_value(m.avg_back_clicks) over (order by m.session_month) - m.avg_back_clicks) / 
+              nullif(first_value(m.avg_back_clicks) over (order by m.session_month), 0) * 100, 2) as delta_back_clicks, -- %
+              
+        round((first_value(m.manual_address_rate) over (order by m.session_month) - m.manual_address_rate) / 
+              nullif(first_value(m.manual_address_rate) over (order by m.session_month), 0) * 100, 2) as delta_manual_address, -- %
+              
+        round((first_value(m.avg_duration_minutes) over (order by m.session_month) - m.avg_duration_minutes) / 
+              nullif(first_value(m.avg_duration_minutes) over (order by m.session_month), 0) * 100, 2) as delta_duration -- %
+        
+    from monthly_metrics m
+    left join technical_metrics t on m.session_month = t.operation_month
+)
+select 
+    to_char(session_month, 'YYYY-MM') as "Месяц",
+    
+    -- основные метрики эффективности
+    conversion_rate  as "Конверсия, %",
+    delta_conversion  as "Дельта конверсии, %",
+    
+    -- метрики удобства интерфейса
+    avg_back_clicks as "Среднее возвратов, %", 
+    delta_back_clicks  as "Дельта возвратов, %",
+    
+    -- качество автоматизации
+    manual_address_rate  as "Ручной ввод адресов, %",
+    delta_manual_address  as "Дельта ручного ввода, %",
+    
+    -- техническая надежность
+    instant_card_success_rate  as "Успех выдачи карт, %", 
+    delta_card_success  as "Дельта успеха карт, %",
+    system_reliability  as "Надежность системы, %",
+    
+    -- цифровизация процесса
+    esign_rate  as "Доля ЭП, %",
+    delta_esign  as "Дельта доли ЭП, %",
+    
+    -- производительность
+    avg_duration_minutes || ' мин' as "Среднее время сессии",
+    delta_duration  as "Дельта времени, %",
+    
+    -- стабильность ключевых шагов
+    identification_success_rate  as "Успех заполнения формы идентификации, %",
+    delta_identification  as "Дельта заполнения формы идентификации, %",
+    documents_success_rate  as "Успех заполнения формы документов, %", 
+    delta_documents  as "Дельта заполнения формы документов, %",
+    
+    -- итоговая оценка работы команды
+    case 
+        when delta_conversion > 5 
+             and delta_back_clicks > 5 
+             and delta_manual_address > 5
+             and delta_esign > 10
+        then 'Сильное улучшение'
+        when delta_conversion > 0 
+             and delta_back_clicks > 0 
+             and delta_manual_address > 0
+        then 'Улучшение'
+        when delta_conversion < -5 
+             and delta_back_clicks < -5 
+             and delta_manual_address < -5
+        then 'Ухудшение'
+        else 'Стабильно'
+    end as "Оценка месяца"
+    
+from metrics_with_delta
+order by session_month;
+
+--Задание 5
+/*
+точки оттока
+Если 40% возвратов приходится на шаг "Адреса"-это сигнал о проблемах с автодополнением или валидацией.
+ */
+
+SELECT 
+    event_category,
+    COUNT(*) as back_clicks,
+    COUNT(DISTINCT case_id) as affected_sessions,
+    ROUND(COUNT(*) * 100.0 / (SELECT COUNT(*) FROM U_M2P5U.LOGS_SCREEN_FORMS_4WHERE event_name = 'Click > Back'), 2) as percent_of_total_returns
+FROM U_M2P5U.LOGS_SCREEN_FORMS_4
+WHERE event_name = 'Click > Back'
+GROUP BY event_category
+ORDER BY back_clicks DESC;
+
+
+
+/*
+Влияние количества возвратов на итоговую конверсию
+Если после 3+ возвратов конверсия падает ниже 20% - пользователи "переучиваются" и бросают процесс.
+*/
+SELECT 
+    back_clicks_count,
+    COUNT(*) as sessions,
+    ROUND(SUM(is_successful) * 100.0 / COUNT(*), 2) as conversion_rate
+FROM session_analysis
+GROUP BY back_clicks_count
+ORDER BY back_clicks_count;
+
+/*
+Эффект цифрового утомления
+Время процесса vs конверсия
+Возможно стоит пересмотреть путь и количество шагов
+*/
+
+SELECT 
+    CASE 
+        WHEN duration_seconds <= 300 THEN '0-5 мин'
+        WHEN duration_seconds <= 600 THEN '5-10 мин' 
+        ELSE '10+ мин'
+    END as time_bucket,
+    COUNT(*) as sessions,
+    ROUND(SUM(is_successful) * 100.0 / COUNT(*), 2) as conversion_rate
+FROM session_analysis
+GROUP BY CASE 
+        WHEN duration_seconds <= 300 THEN '0-5 мин'
+        WHEN duration_seconds <= 600 THEN '5-10 мин' 
+        ELSE '10+ мин'
+    	END
+    	
+/*
+сегментация пользователей по сложности случаев
+выявление групп пользователей, требующих особого подхода в интерфейсе
+*/
+SELECT 
+    CASE 
+        WHEN used_manual_address = 1 AND back_clicks_count > 2 THEN 'сложные случаи'
+        WHEN duration_seconds < 300 THEN 'эксперты'
+        WHEN duration_seconds > 1200 THEN 'затрудняющиеся'
+        ELSE 'стандартные'
+    END as user_segment,
+    COUNT(*) as sessions,
+    ROUND(SUM(is_successful) * 100.0 / COUNT(*), 2) as conversion_rate,
+    ROUND(AVG(duration_seconds) / 60, 2) as avg_duration_minutes
+FROM session_analysis
+GROUP BY CASE 
+        WHEN used_manual_address = 1 AND back_clicks_count > 2 THEN 'сложные случаи'
+        WHEN duration_seconds < 300 THEN 'эксперты'
+        WHEN duration_seconds > 1200 THEN 'затрудняющиеся'
+        ELSE 'стандартные'
+    END
+ORDER BY conversion_rate DESC;
+
+        
+/*
+влияние электронного подписания на общую эффективность
+оценка преимуществ цифрового процесса
+*/
+SELECT 
+    sign_type,
+    COUNT(*) as sessions,
+    ROUND(SUM(is_successful) * 100.0 / COUNT(*), 2) as conversion_rate,
+    ROUND(AVG(duration_seconds) / 60, 2) as avg_duration_minutes,
+    ROUND(AVG(back_clicks_count), 2) as avg_back_clicks
+FROM session_analysis
+WHERE sign_type IS NOT NULL
+GROUP BY sign_type
+ORDER BY conversion_rate DESC;
+
+/*
+сезонность и дни недели
+выявление оптимального времени для регистрации
+*/
+SELECT 
+    TO_CHAR(session_start, 'DY') as day_of_week,
+    EXTRACT(HOUR FROM session_start) as hour_of_day,
+    COUNT(*) as sessions,
+    ROUND(SUM(is_successful) * 100.0 / COUNT(*), 2) as conversion_rate,
+    ROUND(AVG(duration_seconds) / 60, 2) as avg_duration_minutes
+FROM session_analysis
+GROUP BY TO_CHAR(session_start, 'DY'), EXTRACT(HOUR FROM session_start)
+ORDER BY day_of_week, hour_of_day;
+
+/*
+анализ точек отказа по шагам воронки
+определение наиболее проблемных этапов процесса
+*/
+SELECT 
+    'до идентификации' as step_name,
+    ROUND((COUNT(*) - SUM(passed_identification)) * 100.0 / COUNT(*), 2) as dropout_rate
+FROM session_analysis
+UNION ALL
+SELECT 
+    'до адресов',
+    ROUND((SUM(passed_identification) - SUM(passed_addresses)) * 100.0 / COUNT(*), 2)
+FROM session_analysis
+UNION ALL
+SELECT 
+    'до документов',
+    ROUND((SUM(passed_addresses) - SUM(passed_documents)) * 100.0 / COUNT(*), 2)
+FROM session_analysis
+UNION ALL
+SELECT 
+    'до завершения',
+    ROUND((SUM(passed_documents) - SUM(is_successful)) * 100.0 / COUNT(*), 2)
+FROM session_analysis
+ORDER BY 2 DESC;
+
