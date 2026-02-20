@@ -36,7 +36,7 @@ WITH session_journey AS (
         MAX(CASE WHEN event_name = 'Click > Back' THEN 1 ELSE 0 END) as used_back_button,
         MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' AND event_property = 'SES' THEN 1 ELSE 0 END) as used_esign
         
-    from U_M2P5U.LOGS_SCREEN_FORMS_4s
+    from U.LOGS_SCREEN_FORMS_4s
     GROUP BY case_id, timestamp_day
 ),
 daily_metrics AS (
@@ -118,7 +118,7 @@ WITH session_base AS (
         COUNT(*) as total_events,
         MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as is_successful, --Успешная сессия
         MAX(CASE WHEN event_category = 'result' AND event_name = 'Submit > Response' THEN event_property END) as sign_type -- тип завершения (manualSign - если было бумажное подписание, SES - если было электронное подписание)
-    from U_M2P5U.LOGS_SCREEN_FORMS_4s
+    from U.LOGS_SCREEN_FORMS_4s
     WHERE event_category in ('session','result')
     GROUP BY case_id
 ),
@@ -135,7 +135,7 @@ session_steps AS (
         MAX(CASE WHEN event_category = 'accessCard' AND event_name = 'Submit > Response' AND event_property = 'true' THEN 1 ELSE 0 END) as instant_card_success,
         MAX(CASE WHEN event_category = 'nonResidentInfo' AND event_name = 'Submit > Response' THEN 1 ELSE 0 END) as is_non_resident,
         COUNT(CASE WHEN event_name = 'Click > Back' THEN 1 END) as back_clicks_count
-    from U_M2P5U.LOGS_SCREEN_FORMS_4s
+    from U.LOGS_SCREEN_FORMS_4s
     GROUP BY case_id
 )
 SELECT 
@@ -182,7 +182,7 @@ SELECT
         WHEN event_category IN ('summary', 'questionnaire', 'confirm') THEN 'signing'
         ELSE 'other'
     END as operation_group
-from U_M2P5U.LOGS_SCREEN_FORMS_4
+from U.LOGS_SCREEN_FORMS_4
 WHERE event_category NOT IN ('session', 'result');
 
 
